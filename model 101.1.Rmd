@@ -1,0 +1,412 @@
+---
+title: "ML MODEL 101"
+author: "Reuben"
+date: "2024-10-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+### Credit Default Risk Prediction for Loan Approval
+
+- A bank wants to minimize its risk of approving loans to individuals who may default. 
+- The goal is to build a credit risk prediction model to assess whether a customer is likely to default on a loan. 
+- The model will be built using historical data on customers and loans, and it will be deployed through a web application for loan officers to use in real-time.
+
+### Objectives
+
+Develop and deploy a machine learning model using R to predict loan defaults and intergrate with a user friendly interface for deployment via R shiny.
+
+
+#### Business Problem Understanding 
+
+- Goal: Predict whether a borrower will default on their loan.
+- Outcome: Loan officers can approve/reject loans based on a risk score provided by the predictive model.
+- Key Metrics:
+- Default rate: Percentage of loans that default.
+- Approval rate: Loans approved based on model prediction.
+- Model Accuracy: AUC-ROC, Precision, Recall, and F1 Score.
+
+
+#### Data Collection and Understanding
+
+- Historical loan applications data containing the following:
+- Demographics: Age, Gender, Marital Status
+- Financial Information: Annual Income, Debt-to-Income Ratio, Loan Amount, Employment Status
+- Credit Information: Credit Score, Past Defaults, Credit History Length, Open Loans
+- Loan Details: Loan Amount, Loan Type, Interest Rate, Term Length, Installments
+- Target Variable: Loan Default (1 = Default, 0 = No Default)
+
+
+#### Data Preprocessing
+
+*Handle Missing Data*:
+- Use imputation for missing values in income, credit score, etc.
+- Methods: Mean/Median Imputation, K-Nearest Neighbor (KNN).
+*Feature Engineering*:
+- Create derived features such as Debt-to-Income Ratio (Loan_Amount / Income).
+- Flag Risk_Level based on loan type and credit score threshold.
+*Data Transformation*:
+- Convert categorical variables (Gender, Marital Status) using One-Hot Encoding (dummies package).
+- Scale numerical features like Income, Loan Amount, and Credit Score using Min-Max Scaling (scale()).
+*Imbalanced Data Handling*:
+- If the default cases are rare, apply SMOTE (Synthetic Minority Over-sampling Technique) using the DMwR package.
+
+```{r}
+# preprocessing the data
+#install.packages("caret")
+
+library(caret)
+R.version.string
+
+```
+
+```{r}
+#Load dataset
+# Load the necessary library
+
+# Load the readr package (optional)
+#install.packages("readr")
+library(readr)
+
+# Load the data
+df<- read.csv("https://raw.githubusercontent.com/DataGuy-Kariuki/Credit-risk-/refs/heads/main/credit_risk_large_dataset.csv")
+
+# handle missing values
+
+df$Income[is.na(df$Income)]<-median(df$Income,na.rm = TRUE)
+
+#Create debt to income ratio
+
+df$Debt_Income_Ratio<-df$Loan_Amount/df$Income
+
+## Load necessary library
+library(caret)
+
+# Assuming 'df' is your original data frame
+df_dummy <- dummyVars("~ .", data = df)
+
+# Transform the original data frame into a new data frame with one-hot encoded variables
+df_transformed <- predict(df_dummy, newdata = df)
+
+# Convert the resulting matrix to a data frame
+df_one_hot <- as.data.frame(df_transformed)
+
+
+```
+
+
+#### Exploratory Data Analysis (EDA)
+
+*Visualize Data Distribution*:
+- Plot histograms and boxplots for variables like Age, Income, and Credit Score.
+- Correlation Heatmaps (corrplot package) to identify highly correlated features.
+*Target Variable Analysis*:
+- Analyze the distribution of default vs non-default customers using bar plots (ggplot2).
+*Key Relationships*:
+- Explore relationships between Credit Score and Default, Income and Default using scatter plots and group summaries.
+
+```{r}
+#eda example
+
+library(ggplot2)
+ggplot(df,aes(x = Credit_Score, fill = as.factor(Loan_Status)))+
+  geom_histogram(position = "dodge")+
+  labs(title =  "Credit Score vs Loan Default", x = "Credit Score", y = "Count")
+
+# Histogram for Age
+ggplot(df, aes(x = Age)) + 
+  geom_histogram(binwidth = 5, fill = "blue", alpha = 0.8) + 
+  theme_minimal() + 
+  ggtitle("Histogram of Age")
+
+# Boxplot for Income
+ggplot(df, aes(x = as.factor(Loan_Status), y = Income)) + 
+  geom_boxplot(fill = c("lightgreen", "lightpink")) + 
+  theme_minimal() + 
+  ggtitle("Boxplot of Income by Loan Status")
+
+
+# Calculate the correlation matrix
+
+library(tidyverse)
+cor_data <- df %>% 
+  select(Age, Income,Loan_Amount,Credit_Score)  # Select only numeric columns
+
+cor_matrix <- cor(cor_data)
+
+# Install the corrplot package if it's not already installed
+#install.packages("corrplot")
+
+# Load the corrplot package
+library(corrplot)
+
+# Plot the correlation heatmap
+corrplot(cor_matrix, method = "circle", type = "upper", 
+         tl.col = "black", tl.srt = 45, 
+         title = "Correlation Heatmap", 
+         addgrid.col = "lightgray")
+
+
+# Scatter Plot of Credit Score vs. Income colored by Loan_Status
+ggplot(df, aes(x = Loan_Amount, y = Income, color = Loan_Status)) + 
+  geom_point(alpha = 0.6) + 
+  theme_minimal() + 
+  ggtitle("Credit Score vs. Income by Loan Status") + 
+  xlab("Credit Score") + 
+  ylab("Income")
+
+# Group summaries for Credit Score and Income by Loan_Status
+summary_stats <- df %>%
+  group_by(Loan_Status) %>%
+  summarize(
+    Avg_Credit_Score = mean(Loan_Amount),
+    Avg_Income = mean(Income),
+    Count = n()
+  )
+
+print(summary_stats)
+
+
+```
+
+
+
+- Non-default customers (Loan_Status = 0) have a significantly higher average credit score (578.85) compared to default customers (Loan_Status = 1), who have an average credit score of 451.50.
+- This suggests that credit score may be a useful predictor for loan status.
+
+- Non-default customers also have a higher average income (70,843.16) compared to default customers (53,875.24), indicating that income levels might also influence loan repayment behavior.
+
+- There are substantially more non-default customers in the dataset (9,623) compared to default customers (377).
+- This indicates an imbalanced dataset, which is often a challenge in machine learning and statistical modeling.
+
+
+#### Model Development
+*Data Split*:
+- Split data into Training (70%) and Test (30%) using createDataPartition() from the caret package.
+*Model Selection*:
+- Try different algorithms such as:
+- Logistic Regression: Baseline model.
+- Random Forest: For handling non-linear patterns.
+- XGBoost: For high performance with imbalanced data.
+
+
+```{r}
+#model development
+library(caret)
+
+set.seed(123)
+trainIndex <- createDataPartition(df$Loan_Status, p=0.7,list=FALSE)
+train<-df[trainIndex,]
+test<- df[-trainIndex,]
+
+```
+
+#### Random Forest
+
+Random Forest is a powerful ensemble learning technique commonly used for classification and regression tasks. 
+It operates by constructing multiple decision trees during training and outputs the mode of the classes (for classification) or the mean prediction (for regression) of the individual trees.
+
+
+```{r}
+#install.packages("randomForest")
+library(randomForest)
+library(caret)
+rf_model <- randomForest(as.factor(Loan_Status)~., data = train,ntree=100)
+
+# predict on test data
+
+rf_pred<- predict(rf_model,test)
+# Generate the confusion matrix
+confusionMatrix(as.factor(rf_pred), as.factor(test$Loan_Status))
+```
+- True Negatives (TN): 2886 (Predicted 0, Actual 0)
+- False Positives (FP): 1 (Predicted 1, Actual 0)
+-  Negatives (FN): 0 (Predicted 0, Actual 1)
+- True Positives (TP): 112 (Predicted 1, Actual 1)
+- Performance Metrics
+- Accuracy: 0.9997
+
+- This indicates that the model correctly predicted 99.97% of the instances.95% Confidence Interval (CI): (0.9981, 1)
+
+- This provides a range in which we can be 95% confident the true accuracy lies.No Information Rate (NIR): 0.9623
+
+- This is the accuracy that would be achieved by always predicting the majority class.P-Value [Acc > NIR]: <2e-16
+
+- This indicates that the model's accuracy is significantly better than the NIR.Kappa: 0.9954
+
+- Kappa measures the agreement between predicted and observed classifications. Values close to 1 indicate almost perfect agreement.
+Mcnemar's Test P-Value: 1
+
+- This test is used to compare the sensitivity and specificity of two classification tests. A value of 1 suggests no significant difference.
+Sensitivity (True Positive Rate): 1.0000
+
+- This indicates that the model correctly identifies all actual positive cases (112 out of 112).Specificity (True Negative Rate): 0.9912
+
+- This indicates that the model correctly identifies 99.12% of actual negative cases.Positive Predictive Value (PPV): 0.9997
+
+- This indicates that when the model predicts a positive case, it is correct 99.97% of the time.Negative Predictive Value (NPV): 1.0000
+
+- This indicates that when the model predicts a negative case, it is correct 100% of the time.Prevalence: 0.9623
+
+- This indicates that 96.23% of the instances are in the negative class (0).Detection Rate: 0.9623
+
+This indicates the proportion of actual positive cases that were correctly predicted.
+Detection Prevalence: 0.9627
+
+- This indicates the proportion of predicted positive cases relative to the total cases.Balanced Accuracy: 0.9956
+
+- This is the average of sensitivity and specificity, providing a measure that accounts for class imbalance.'Positive' Class: 0
+
+
+#### Model Evaluation
+
+```{r}
+#install.packages("pROC")
+
+#roc curve
+library(pROC)
+roc_obj<-roc(test$Loan_Status,as.numeric(rf_pred))
+plot(roc_obj,col="blue",main ="ROC CURVE")
+
+# Save the model to an RDS file
+saveRDS(rf_model, file = "rf_model.rds")
+
+```
+
+```{r}
+library(shiny)
+library(randomForest)
+
+# Load the saved model
+rf_model <- readRDS("rf_model.rds")
+
+
+
+ui <- fluidPage(
+    titlePanel("Credit Risk Prediction"),
+    sidebarLayout(
+        sidebarPanel(
+            numericInput("age", "Age:", value = 30, min = 18, max = 80),
+            numericInput("income", "Annual Income:", value = 50000, min = 10000),
+            numericInput("loan_amount", "Loan Amount:", value = 10000, min = 1000),
+            numericInput("credit_score", "Credit Score:", value = 700, min = 300, max = 850),
+            actionButton("predict", "Predict Risk")
+        ),
+        mainPanel(
+            textOutput("result")
+        )
+    )
+)
+
+# Server logic
+server <- function(input, output) {
+    observeEvent(input$predict, {
+        new_data <- data.frame(Age = input$age, Income = input$income,
+                               Loan_Amount = input$loan_amount, Credit_Score = input$credit_score)
+        
+        prediction <- predict(rf_model, new_data, type = "prob")
+        output$result <- renderText({
+            paste("Predicted Default Risk:", round(prediction[2] * 100, 2), "%")
+        })
+    })
+}
+
+# Run the app
+shinyApp(ui = ui, server = server)
+
+
+
+```
+
+The expected output of this R Shiny application is a web interface that allows users to input customer data such as Age, Income, Loan Amount, and Credit Score. When the user clicks the "Predict Risk" button, the app will display the predicted default risk based on the Random Forest model (rf_model.rds) that was loaded at the beginning.
+
+- Breakdown of the Output:
+UI Components:
+
+The web interface will have input fields for:
+Age: A numeric input where users can specify the customer's age.
+Income: A numeric input for the annual income of the customer.
+Loan Amount: A numeric input for the requested loan amount.
+Credit Score: A numeric input for the customer's credit score.
+A "Predict Risk" button for generating the prediction.
+-- Prediction:
+
+When the user clicks the "Predict Risk" button, the app collects the input values and creates a new dataframe (new_data).
+The Random Forest model (rf_model.rds) predicts the probability that the customer will default.
+The predicted default risk is displayed as a percentage.
+Example Output:
+If the user inputs the following data:
+
+Age: 40
+Annual Income: 60,000
+Loan Amount: 20,000
+Credit Score: 650
+When they press the "Predict Risk" button, the result could be something like:
+
+- mathematical
+
+Predicted Default Risk: 28.75%
+This means the model predicts a 28.75% chance that the customer will default on the loan based on the given inputs.
+```{r}
+#which is required for deploying your app to ShinyApps.io, 
+#install.packages("rsconnect")
+
+library(rsconnect)
+
+#you need to authenticate your ShinyApps.io account by entering the account token and secret key from your ShinyApps.io account.
+
+rsconnect::setAccountInfo(name='kamwanaanalyst',
+			  token='F2BECBC274AB97308196FFE5102B6C63',
+			  secret='Thjz9T/h9u3BTvOvxaeNkmEyBwc6N4xX7kzBl9Ah')
+
+
+# Load required libraries
+library(shiny)
+library(randomForest)
+library(rsconnect)
+
+# Load the saved Random Forest model
+rf_model <- readRDS("rf_model.rds")
+
+# Define the UI for the application
+ui <- fluidPage(
+    titlePanel("Credit Risk Prediction"),
+    sidebarLayout(
+        sidebarPanel(
+            numericInput("age", "Age:", value = 30, min = 18, max = 80),
+            numericInput("income", "Annual Income:", value = 50000, min = 10000),
+            numericInput("loan_amount", "Loan Amount:", value = 10000, min = 1000),
+            numericInput("credit_score", "Credit Score:", value = 700, min = 300, max = 850),
+            actionButton("predict", "Predict Risk")
+        ),
+        mainPanel(
+            textOutput("result")
+        )
+    )
+)
+
+# Define the server logic
+server <- function(input, output) {
+    observeEvent(input$predict, {
+        new_data <- data.frame(Age = input$age, Income = input$income,
+                               Loan_Amount = input$loan_amount, Credit_Score = input$credit_score)
+        
+        prediction <- predict(rf_model, new_data, type = "prob")
+        output$result <- renderText({
+            paste("Predicted Default Risk:", round(prediction[2] * 100, 2), "%")
+        })
+    })
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
+
+# Deploy to ShinyApps.io
+rsconnect::deployApp('path_to_your_shiny_app_directory')
+
+
+```
+
